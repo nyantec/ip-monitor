@@ -1,0 +1,6 @@
+targets:
+  - type: arp
+    iface: br42
+    addr: 195.39.247.104
+    source_addr: 195.39.247.100
+
