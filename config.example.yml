@@ -3,4 +3,7 @@ targets:
     iface: br42
     addr: 195.39.247.104
     source_addr: 195.39.247.100
-
+  - type: icmp
+    iface: br42
+    addr: 195.39.247.122
+    source_addr: 195.39.247.100

@@ -1,7 +1,7 @@
-use std::time::{Duration, SystemTime, Instant};
+use std::time::{Duration, Instant};
 use std::net::Ipv4Addr;
 use std::sync::Arc;
-use std::collections::{HashSet, HashMap};
+use std::collections::HashMap;
 use super::{Error, Result, none};
 use super::config::{TargetConfig, TargetType};
 use afpacket::r#async::RawPacketStream;
@@ -36,6 +36,18 @@ fn get_mac(iface: &str) -> Result<MacAddr> {
 fn get_stream(iface: &str) -> Result<RawPacketStream> {
     let mut stream = RawPacketStream::new()?;
     stream.bind(&iface)?;
+
+    // sudo tcpdump -p -ni lo -ddd "arp or icmp"
+    stream.set_bpf_filter(vec![
+        // length: 7
+        (40, 0, 0, 12),
+        (21, 3, 0, 2054),
+        (21, 0, 3, 2048),
+        (48, 0, 0, 23),
+        (21, 0, 1, 1),
+        (6, 0, 0, 262144),
+        (6, 0, 0, 0),
+    ])?;
     Ok(stream)
 }
 
@@ -73,7 +85,7 @@ fn make_arp_request(target: &TargetConfig) -> Result<Vec<u8>> {
     Ok(ethernet_packet.packet().to_vec())
 }
 
-fn make_icmp_echo_request(target: &TargetConfig) -> Result<Vec<u8>> {
+fn make_icmp_echo_request(target: &TargetConfig, sequence_number: u16) -> Result<Vec<u8>> {
     let source_mac = get_mac(&target.iface)?;
 
     let icmp = EchoRequest {
@@ -81,7 +93,7 @@ fn make_icmp_echo_request(target: &TargetConfig) -> Result<Vec<u8>> {
         icmp_code: IcmpCodes::NoCode,
         checksum: 0,
         identifier: 0,
-        sequence_number: ((SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs() % (u16::MAX as u64)) as u16),
+        sequence_number,
         payload: vec![],
     };
 
@@ -156,7 +168,7 @@ impl Probe {
         res
     }
 
-    async fn recv_group(self: Arc<Self>, iface: String, targets: Vec<TargetConfig>) -> Result<()> {
+    async fn recv_group(self: Arc<Self>, iface: String) -> Result<()> {
         let mut buf = [0u8; 1500];
         let mut stream = get_stream(&iface)?;
         let mac = get_mac(&iface)?;
@@ -200,15 +212,17 @@ impl Probe {
 
     async fn send_target(self: Arc<Self>, target: TargetConfig) -> Result<()> {
         let mut stream = get_stream(&target.iface)?;
+        let mut sequence_number = 1;
 
         let id = TargetIdentifier (target.r#type.clone(), target.addr.clone());
-        let request = match target.r#type {
-            TargetType::Arp => make_arp_request(&target)?,
-            TargetType::Icmp => make_icmp_echo_request(&target)?,
-        };
 
         loop {
             task::sleep(Duration::from_millis(1000)).await;
+            let request = match target.r#type {
+                TargetType::Arp => make_arp_request(&target)?,
+                TargetType::Icmp => make_icmp_echo_request(&target, sequence_number)?,
+            };
+            sequence_number += 1;
             self.last_sent.lock().await.insert(id.clone(), Instant::now());
             info!("sent {:?}", id);
             stream.write(&request).await.unwrap();
@@ -219,8 +233,8 @@ impl Probe {
         let mut tasks = Vec::new();
         let probe = Arc::new(self);
 
-        for (iface, targets) in probe.clone().targets_by_iface() {
-            tasks.push(task::spawn(probe.clone().recv_group(iface, targets)));
+        for (iface, _targets) in probe.clone().targets_by_iface() {
+            tasks.push(task::spawn(probe.clone().recv_group(iface)));
         }
 
         for target in &probe.clone().targets {
