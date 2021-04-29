@@ -5,7 +5,7 @@ use super::Result;
 use serde::Deserialize;
 use async_std::fs;
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum TargetType {
     Icmp,

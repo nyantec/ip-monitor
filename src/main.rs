@@ -4,10 +4,10 @@ mod config;
 
 pub use error::*;
 
+use probe::Probe;
 use config::Config;
 use getopts::Options;
 use log::{debug, error};
-use futures::future::{BoxFuture, join_all};
 
 fn print_usage(program: &str, opts: Options) {
     let brief = format!("Usage: {} CONFIG [options]", program);
@@ -50,11 +50,9 @@ async fn main() {
 
     debug!("\n{:#?}", cfg);
 
-    let tasks: Vec<BoxFuture<Result<()>>> = vec![
-        Box::pin(probe::send(cfg.clone())),
-        Box::pin(probe::recv(cfg.clone())),
-    ];
-    join_all(tasks).await.into_iter().collect::<Result<()>>().unwrap_or_else(|e| {
+    let probe = Probe::new(cfg.targets);
+
+    probe.run().await.unwrap_or_else(|e| {
         error!("{}", e.to_string());
         std::process::exit(1);
     });
