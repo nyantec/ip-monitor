@@ -1,11 +1,11 @@
 use std::time::{Duration, Instant};
 use std::net::Ipv4Addr;
 use std::sync::Arc;
-use std::collections::HashMap;
+use std::collections::{HashMap, BTreeMap};
 use super::{Error, Result, none};
 use super::config::{TargetConfig, TargetType};
 use afpacket::r#async::RawPacketStream;
-use log::{debug, info};
+use log::{debug, trace, warn};
 use async_std::task;
 use async_std::sync::Mutex;
 use async_std::io::prelude::{WriteExt, ReadExt};
@@ -49,6 +49,22 @@ fn get_stream(iface: &str) -> Result<RawPacketStream> {
         (6, 0, 0, 0),
     ])?;
     Ok(stream)
+}
+
+fn log_rtt(id: TargetIdentifier, value: Duration) {
+	let mut entry_fields = BTreeMap::<String, String>::new();
+	entry_fields.insert("SYSLOG_IDENTIFIER".into(), "sensor-data".into());
+
+	let mut entry = journald::JournalEntry::from_fields(&entry_fields);
+	entry.set_message(&format!("ip-monitor={}", serde_json::json!({
+        "type": id.0.to_string(),
+        "addr": id.1,
+        "rtt": value,
+    })));
+
+	if let Err(e) = journald::writer::submit(&entry) {
+		warn!("Error while submitting sensor data to journald: {}", e);
+	}
 }
 
 fn make_arp_request(target: &TargetConfig) -> Result<Vec<u8>> {
@@ -202,7 +218,14 @@ impl Probe {
 
             if let Some(last_sent) = self.last_sent.lock().await.get(&id) {
                 let duration = now.duration_since(*last_sent);
-                info!("received {:?} rtt {:?}", id, duration);
+                {
+                    let id = id.clone();
+                    let duration = duration.clone();
+                    task::spawn_blocking(move || {
+                        log_rtt(id, duration);
+                    });
+                }
+                trace!("received {:?} rtt {:?}", id, duration);
             } else {
                 debug!("unsolicited {:?}", id);
                 continue
@@ -224,7 +247,7 @@ impl Probe {
             };
             sequence_number += 1;
             self.last_sent.lock().await.insert(id.clone(), Instant::now());
-            info!("sent {:?}", id);
+            trace!("sent {:?}", id);
             stream.write(&request).await.unwrap();
         }
     }
