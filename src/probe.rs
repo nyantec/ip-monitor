@@ -51,7 +51,7 @@ fn get_stream(iface: &str) -> Result<RawPacketStream> {
     Ok(stream)
 }
 
-fn log_rtt(id: TargetIdentifier, value: Duration) {
+fn log_rtt(id: TargetIdentifier, value: u64) {
 	let mut entry_fields = BTreeMap::<String, String>::new();
 	entry_fields.insert("SYSLOG_IDENTIFIER".into(), "sensor-data".into());
 
@@ -59,7 +59,7 @@ fn log_rtt(id: TargetIdentifier, value: Duration) {
 	entry.set_message(&format!("ip-monitor={}", serde_json::json!({
         "type": id.0.to_string(),
         "addr": id.1,
-        "rtt": value,
+        "rtt_nanos": value,
     })));
 
 	if let Err(e) = journald::writer::submit(&entry) {
@@ -220,7 +220,7 @@ impl Probe {
                 let duration = now.duration_since(*last_sent);
                 {
                     let id = id.clone();
-                    let duration = duration.clone();
+                    let duration = duration.as_nanos() as u64;
                     task::spawn_blocking(move || {
                         log_rtt(id, duration);
                     });
