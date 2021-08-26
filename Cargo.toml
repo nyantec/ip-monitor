@@ -16,5 +16,5 @@ serde_yaml = "0.8"
 afpacket = "0.1.4"
 async-std = { version = "1.9", features = [ "attributes", "unstable" ] }
 futures = "0.3"
-journald = { git = "https://github.com/nyantec/rust-journald.git", rev = "29c69c34c211eccbee51505cce62d9a7fe4d36b6" }
+journald = { git = "https://github.com/nyantec/rust-journald.git", rev = "192fd851e79d8172c90ae21b2dceb51a08f1cfce" }
 serde_json = "1"

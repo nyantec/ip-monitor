@@ -515,7 +515,7 @@ checksum = "dd25036021b0de88a0aff6b850051563c6516d0bf53f8638938edbb9de732736"
 [[package]]
 name = "journald"
 version = "0.6.0"
-source = "git+https://github.com/nyantec/rust-journald.git?rev=29c69c34c211eccbee51505cce62d9a7fe4d36b6#29c69c34c211eccbee51505cce62d9a7fe4d36b6"
+source = "git+https://github.com/nyantec/rust-journald.git?rev=192fd851e79d8172c90ae21b2dceb51a08f1cfce#192fd851e79d8172c90ae21b2dceb51a08f1cfce"
 dependencies = [
  "cstr-argument",
  "libc",
