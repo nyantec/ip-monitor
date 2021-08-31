@@ -16,13 +16,22 @@ use pnet::packet::ipv4;
 use pnet::packet::ip::IpNextHeaderProtocols;
 use pnet::packet::icmp::{IcmpPacket, IcmpTypes};
 use pnet::packet::icmp::echo_request::{MutableEchoRequestPacket, EchoRequest, IcmpCodes};
+use pnet::packet::icmp::echo_reply::EchoReplyPacket;
 use pnet::util::MacAddr;
 use pnet::packet::Packet;
 use pnet::util::checksum;
 use futures::future::join_all;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct TargetIdentifier (TargetType, Ipv4Addr);
+enum Target {
+    Arp {
+        addr: Ipv4Addr,
+    },
+    Icmp {
+        addr: Ipv4Addr,
+        sequence_number: u16,
+    },
+}
 
 fn get_mac(iface: &str) -> Result<MacAddr> {
     let interface = pnet::datalink::interfaces()
@@ -51,14 +60,18 @@ fn get_stream(iface: &str) -> Result<RawPacketStream> {
     Ok(stream)
 }
 
-fn log_rtt(id: TargetIdentifier, value: u64) {
+fn log_rtt(target: Target, value: u64) {
 	let mut entry_fields = BTreeMap::<String, String>::new();
 	entry_fields.insert("SYSLOG_IDENTIFIER".into(), "sensor-data".into());
 
+    let (target_type, target_addr) = match target {
+        Target::Arp { addr } => (TargetType::Arp, addr),
+        Target::Icmp { addr, .. } => (TargetType::Icmp, addr),
+    };
 	let mut entry = journald::JournalEntry::from_fields(&entry_fields);
 	entry.set_message(&format!("ip-monitor={}", serde_json::json!({
-        "type": id.0.to_string(),
-        "addr": id.1,
+        "type": target_type.to_string(),
+        "addr": target_addr,
         "rtt_nanos": value,
     })));
 
@@ -158,7 +171,7 @@ fn make_icmp_echo_request(target: &TargetConfig, sequence_number: u16) -> Result
 #[derive(Debug)]
 pub struct Probe {
     targets: Vec<TargetConfig>,
-    last_sent: Mutex<HashMap<TargetIdentifier, Instant>>,
+    last_sent: Mutex<HashMap<Target, Instant>>,
 }
 
 impl Probe {
@@ -191,26 +204,33 @@ impl Probe {
 
         loop {
             stream.read(&mut buf).await?;
+            let mut buf = &buf[..];
+
             let ethernet = EthernetPacket::new(&buf).unwrap();
+            buf = &buf[EthernetPacket::minimum_packet_size()..];
             if ethernet.get_destination() != mac { continue };
             let id = match ethernet.get_ethertype() {
                 EtherTypes::Arp => {
-                    let arp = ArpPacket::new(&buf[EthernetPacket::minimum_packet_size()..]).unwrap();
+                    let arp = ArpPacket::new(&buf).unwrap();
                     if arp.get_operation() != ArpOperations::Reply { continue };
                     let addr = arp.get_sender_proto_addr();
 
-                    TargetIdentifier (TargetType::Arp, addr)
+                    Target::Arp { addr }
                 },
                 EtherTypes::Ipv4 => {
-                    let ipv4 = Ipv4Packet::new(&buf[EthernetPacket::minimum_packet_size()..]).unwrap();
+                    let ipv4 = Ipv4Packet::new(&buf).unwrap();
+                    buf = &buf[Ipv4Packet::minimum_packet_size()..];
                     // if ipv4.get_destination() != ??? { continue; }
                     if ipv4.get_next_level_protocol() != IpNextHeaderProtocols::Icmp { continue };
                     let addr = ipv4.get_source();
 
-                    let icmp = IcmpPacket::new(&buf[EthernetPacket::minimum_packet_size()+Ipv4Packet::minimum_packet_size()..]).unwrap();
+                    let icmp = IcmpPacket::new(&buf).unwrap();
                     if icmp.get_icmp_type() != IcmpTypes::EchoReply { continue };
 
-                    TargetIdentifier (TargetType::Icmp, addr)
+                    let icmp_reply = EchoReplyPacket::new(&buf).unwrap();
+                    let sequence_number = icmp_reply.get_sequence_number();
+
+                    Target::Icmp { addr, sequence_number }
                 },
                 _ => continue,
             };
@@ -237,13 +257,17 @@ impl Probe {
         let mut stream = get_stream(&target.iface)?;
         let mut sequence_number = 1;
 
-        let id = TargetIdentifier (target.r#type.clone(), target.addr.clone());
-
         loop {
             task::sleep(Duration::from_millis(1000)).await;
-            let request = match target.r#type {
-                TargetType::Arp => make_arp_request(&target)?,
-                TargetType::Icmp => make_icmp_echo_request(&target, sequence_number)?,
+            let (request, id) = match target.r#type {
+                TargetType::Arp => (
+                    make_arp_request(&target)?,
+                    Target::Arp { addr: target.addr.clone() }
+                ),
+                TargetType::Icmp => (
+                    make_icmp_echo_request(&target, sequence_number)?,
+                    Target::Icmp { addr: target.addr.clone(), sequence_number }
+                ),
             };
             sequence_number += 1;
             self.last_sent.lock().await.insert(id.clone(), Instant::now());
