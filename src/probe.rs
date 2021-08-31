@@ -1,6 +1,7 @@
 use std::time::{Duration, Instant};
 use std::net::Ipv4Addr;
 use std::sync::Arc;
+use std::num::Wrapping;
 use std::collections::{HashMap, BTreeMap};
 use super::{Error, Result, none};
 use super::config::{TargetConfig, TargetType};
@@ -255,7 +256,7 @@ impl Probe {
 
     async fn send_target(self: Arc<Self>, target: TargetConfig) -> Result<()> {
         let mut stream = get_stream(&target.iface)?;
-        let mut sequence_number = 1;
+        let mut sequence_number = Wrapping(1);
 
         loop {
             task::sleep(Duration::from_millis(1000)).await;
@@ -265,11 +266,11 @@ impl Probe {
                     Target::Arp { addr: target.addr.clone() }
                 ),
                 TargetType::Icmp => (
-                    make_icmp_echo_request(&target, sequence_number)?,
-                    Target::Icmp { addr: target.addr.clone(), sequence_number }
+                    make_icmp_echo_request(&target, sequence_number.0)?,
+                    Target::Icmp { addr: target.addr.clone(), sequence_number: sequence_number.0 }
                 ),
             };
-            sequence_number += 1;
+            sequence_number += Wrapping(1);
             self.last_sent.lock().await.insert(id.clone(), Instant::now());
             trace!("sent {:?}", id);
             stream.write(&request).await.unwrap();
