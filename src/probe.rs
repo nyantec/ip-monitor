@@ -207,28 +207,43 @@ impl Probe {
             stream.read(&mut buf).await?;
             let mut buf = &buf[..];
 
-            let ethernet = EthernetPacket::new(&buf).unwrap();
+            let ethernet = match EthernetPacket::new(&buf) {
+                Some(p) => p,
+                None => continue,
+            };
             buf = &buf[EthernetPacket::minimum_packet_size()..];
             if ethernet.get_destination() != mac { continue };
             let id = match ethernet.get_ethertype() {
                 EtherTypes::Arp => {
-                    let arp = ArpPacket::new(&buf).unwrap();
+                    let arp = match ArpPacket::new(&buf) {
+                        Some(p) => p,
+                        None => continue,
+                    };
                     if arp.get_operation() != ArpOperations::Reply { continue };
                     let addr = arp.get_sender_proto_addr();
 
                     Target::Arp { addr }
                 },
                 EtherTypes::Ipv4 => {
-                    let ipv4 = Ipv4Packet::new(&buf).unwrap();
+                    let ipv4 = match Ipv4Packet::new(&buf) {
+                        Some(p) => p,
+                        None => continue,
+                    };
                     buf = &buf[Ipv4Packet::minimum_packet_size()..];
                     // if ipv4.get_destination() != ??? { continue; }
                     if ipv4.get_next_level_protocol() != IpNextHeaderProtocols::Icmp { continue };
                     let addr = ipv4.get_source();
 
-                    let icmp = IcmpPacket::new(&buf).unwrap();
+                    let icmp = match IcmpPacket::new(&buf) {
+                        Some(p) => p,
+                        None => continue,
+                    };
                     if icmp.get_icmp_type() != IcmpTypes::EchoReply { continue };
 
-                    let icmp_reply = EchoReplyPacket::new(&buf).unwrap();
+                    let icmp_reply = match EchoReplyPacket::new(&buf) {
+                        Some(p) => p,
+                        None => continue,
+                    };
                     let sequence_number = icmp_reply.get_sequence_number();
 
                     Target::Icmp { addr, sequence_number }
