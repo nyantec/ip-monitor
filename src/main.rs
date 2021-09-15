@@ -1,8 +1,5 @@
-mod error;
 mod probe;
 mod config;
-
-pub use error::*;
 
 use probe::Probe;
 use config::Config;

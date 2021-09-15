@@ -3,12 +3,13 @@ use std::net::Ipv4Addr;
 use std::sync::Arc;
 use std::num::Wrapping;
 use std::collections::{HashMap, BTreeMap};
-use super::{Error, Result, none};
+use anyhow::{Result};
 use super::config::{TargetConfig, TargetType};
 use afpacket::r#async::RawPacketStream;
-use log::{debug, trace, warn};
+use log::{trace, warn};
 use async_std::task;
-use async_std::sync::Mutex;
+use async_std::future::timeout;
+use async_std::channel::{bounded, Receiver, Sender};
 use async_std::io::prelude::{WriteExt, ReadExt};
 use pnet::packet::arp::{MutableArpPacket, ArpPacket, ArpHardwareTypes, ArpOperations, Arp};
 use pnet::packet::ethernet::{MutableEthernetPacket, EthernetPacket, EtherTypes, Ethernet};
@@ -22,25 +23,40 @@ use pnet::util::MacAddr;
 use pnet::packet::Packet;
 use pnet::util::checksum;
 use futures::future::join_all;
+use cached::proc_macro::cached;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq)]
+struct ArpTarget {
+    addr: Ipv4Addr,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct IcmpTarget {
+    addr: Ipv4Addr,
+    sequence_number: u16,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 enum Target {
+    Arp(ArpTarget),
+    Icmp(IcmpTarget),
+}
+
+#[derive(Debug, Clone)]
+enum ResponseData {
     Arp {
-        addr: Ipv4Addr,
+        l2addr: MacAddr,
     },
-    Icmp {
-        addr: Ipv4Addr,
-        sequence_number: u16,
-    },
+    Icmp,
 }
 
 fn get_mac(iface: &str) -> Result<MacAddr> {
     let interface = pnet::datalink::interfaces()
         .into_iter()
         .find(|i| i.name == iface)
-        .ok_or_else(|| none!("network interface"))?;
+        .expect(&format!("Network interface {}", iface));
 
-    Ok(interface.mac.ok_or_else(|| none!("interface mac"))?)
+    Ok(interface.mac.unwrap())
 }
 
 fn get_stream(iface: &str) -> Result<RawPacketStream> {
@@ -66,8 +82,8 @@ fn log_rtt(target: Target, value: u64) {
 	entry_fields.insert("SYSLOG_IDENTIFIER".into(), "sensor-data".into());
 
     let (target_type, target_addr) = match target {
-        Target::Arp { addr } => (TargetType::Arp, addr),
-        Target::Icmp { addr, .. } => (TargetType::Icmp, addr),
+        Target::Arp(t) => (TargetType::Arp, t.addr),
+        Target::Icmp(t) => (TargetType::Icmp, t.addr),
     };
 	let mut entry = journald::JournalEntry::from_fields(&entry_fields);
 	entry.set_message(&format!("ip-monitor={}", serde_json::json!({
@@ -81,8 +97,8 @@ fn log_rtt(target: Target, value: u64) {
 	}
 }
 
-fn make_arp_request(target: &TargetConfig) -> Result<Vec<u8>> {
-    let source_mac = get_mac(&target.iface)?;
+fn make_arp_request(target: &TargetConfig) -> Vec<u8> {
+    let source_mac = get_mac(&target.iface).unwrap();
 
     let arp = Arp {
         hardware_type: ArpHardwareTypes::Ethernet,
@@ -112,11 +128,11 @@ fn make_arp_request(target: &TargetConfig) -> Result<Vec<u8>> {
     let mut ethernet_packet = MutableEthernetPacket::new(&mut ethernet_buffer).unwrap();
     ethernet_packet.populate(&ethernet);
 
-    Ok(ethernet_packet.packet().to_vec())
+    ethernet_packet.packet().to_vec()
 }
 
-fn make_icmp_echo_request(target: &TargetConfig, sequence_number: u16) -> Result<Vec<u8>> {
-    let source_mac = get_mac(&target.iface)?;
+fn make_icmp_echo_request(target: &TargetConfig, sequence_number: u16, dst_mac: MacAddr) -> Vec<u8> {
+    let source_mac = get_mac(&target.iface).unwrap();
 
     let icmp = EchoRequest {
         icmp_type: IcmpTypes::EchoRequest,
@@ -156,7 +172,7 @@ fn make_icmp_echo_request(target: &TargetConfig, sequence_number: u16) -> Result
     ipv4_packet.set_checksum(ipv4::checksum(&ipv4_packet.to_immutable())); // needed?
 
     let ethernet = Ethernet {
-        destination: MacAddr::broadcast(),
+        destination: dst_mac,
         source: source_mac,
         ethertype: EtherTypes::Ipv4,
         payload: ipv4_packet.packet().to_vec(),
@@ -166,21 +182,107 @@ fn make_icmp_echo_request(target: &TargetConfig, sequence_number: u16) -> Result
     let mut ethernet_packet = MutableEthernetPacket::new(&mut ethernet_buffer).unwrap();
     ethernet_packet.populate(&ethernet);
 
-    Ok(ethernet_packet.packet().to_vec())
+    ethernet_packet.packet().to_vec()
 }
 
 #[derive(Debug)]
 pub struct Probe {
     targets: Vec<TargetConfig>,
-    last_sent: Mutex<HashMap<Target, Instant>>,
+}
+
+struct TargetTask {
+    incoming_stream: Receiver<(Instant, Target, ResponseData)>,
+    target: TargetConfig,
+    stream: RawPacketStream,
+}
+
+#[cached(time = 60, key = "TargetConfig", convert = r#"{ task.target.clone() }"#, result = true)]
+async fn arp_query(task: &mut TargetTask) -> Result<MacAddr> {
+    let req_timeout = Duration::from_secs(1000);
+    let sent = Instant::now();
+    let request = make_arp_request(&task.target);
+    task.stream.write(&request).await.unwrap();
+    let target = Target::Arp(ArpTarget { addr: task.target.addr.clone() });
+    let resp_fut = task.get_response(&target, sent);
+    match timeout(req_timeout, resp_fut).await {
+        Ok((_duration, response_data)) => {
+            if let ResponseData::Arp { l2addr } = response_data {
+                trace!("arp query for {:?} was answered with {}", target, l2addr);
+                Ok(l2addr)
+            } else {
+                unreachable!();
+            }
+        },
+        Err(err) => {
+            warn!("arp query for {:?} timed out", target);
+            Err(err)?
+        },
+    }
+}
+
+impl TargetTask {
+    async fn get_response(&mut self, filter_target: &Target, sent: Instant) -> (Duration, ResponseData) {
+        loop {
+            let (received_time, target, response_data) = self.incoming_stream.recv().await.unwrap();
+            if *filter_target != target { continue; }
+            match received_time.checked_duration_since(sent) {
+                None => continue,
+                Some(duration) => break (duration, response_data),
+            }
+        }
+    }
+
+    async fn run(mut self) -> Result<()> {
+        let mut sequence_number = Wrapping(1);
+
+        loop {
+            let req_interval = Duration::from_millis(1000); // also timeout
+
+            let (request, id) = match self.target.r#type {
+                TargetType::Arp => (
+                    make_arp_request(&self.target),
+                    Target::Arp(ArpTarget { addr: self.target.addr.clone() })
+                ),
+                TargetType::Icmp => {
+                    let dst_mac = arp_query(&mut self).await?;
+                    (
+                        make_icmp_echo_request(&self.target, sequence_number.0, dst_mac),
+                        Target::Icmp(IcmpTarget { addr: self.target.addr.clone(), sequence_number: sequence_number.0 })
+                    )
+                },
+            };
+            sequence_number += Wrapping(1);
+            self.stream.write(&request).await.unwrap();
+            let sent = Instant::now();
+            trace!("sent     {:?}", id);
+
+            let resp_fut = self.get_response(&id, sent);
+            match timeout(req_interval, resp_fut).await {
+                Ok((duration, _response_data)) => {
+                    let duration_nanos = duration.as_nanos() as u64;
+                    {
+                        let id = id.clone();
+                        task::spawn_blocking(move || {
+                            log_rtt(id, duration_nanos);
+                        });
+                    }
+                    trace!("received {:?} rtt {:?}", &id, duration);
+                    if let Some(remaining) = req_interval.checked_sub(duration) {
+                        task::sleep(remaining).await;
+                    }
+                },
+                Err(_) => {
+                    warn!("timeout exceeded for {:?}", &id);
+                },
+            }
+        }
+    }
+
 }
 
 impl Probe {
     pub fn new(targets: Vec<TargetConfig>) -> Probe {
-        Probe {
-            targets,
-            last_sent: Mutex::new(HashMap::new()),
-        }
+        Probe { targets }
     }
 
     fn targets_by_iface(self: Arc<Self>) -> HashMap<String, Vec<TargetConfig>> {
@@ -198,9 +300,8 @@ impl Probe {
         res
     }
 
-    async fn recv_group(self: Arc<Self>, iface: String) -> Result<()> {
+    async fn fill_incoming_stream(self: Arc<Self>, iface: String, tx: Sender<(Instant, Target, ResponseData)>, mut stream: RawPacketStream) -> Result<()> {
         let mut buf = [0u8; 1500];
-        let mut stream = get_stream(&iface)?;
         let mac = get_mac(&iface)?;
 
         loop {
@@ -213,7 +314,7 @@ impl Probe {
             };
             buf = &buf[EthernetPacket::minimum_packet_size()..];
             if ethernet.get_destination() != mac { continue };
-            let id = match ethernet.get_ethertype() {
+            let msg = match ethernet.get_ethertype() {
                 EtherTypes::Arp => {
                     let arp = match ArpPacket::new(&buf) {
                         Some(p) => p,
@@ -221,8 +322,9 @@ impl Probe {
                     };
                     if arp.get_operation() != ArpOperations::Reply { continue };
                     let addr = arp.get_sender_proto_addr();
+                    let l2addr = arp.get_sender_hw_addr();
 
-                    Target::Arp { addr }
+                    (Instant::now(), Target::Arp(ArpTarget { addr }), ResponseData::Arp { l2addr })
                 },
                 EtherTypes::Ipv4 => {
                     let ipv4 = match Ipv4Packet::new(&buf) {
@@ -246,49 +348,11 @@ impl Probe {
                     };
                     let sequence_number = icmp_reply.get_sequence_number();
 
-                    Target::Icmp { addr, sequence_number }
+                    (Instant::now(), Target::Icmp(IcmpTarget { addr, sequence_number }), ResponseData::Icmp)
                 },
                 _ => continue,
             };
-            let now = Instant::now();
-
-            if let Some(last_sent) = self.last_sent.lock().await.get(&id) {
-                let duration = now.duration_since(*last_sent);
-                {
-                    let id = id.clone();
-                    let duration = duration.as_nanos() as u64;
-                    task::spawn_blocking(move || {
-                        log_rtt(id, duration);
-                    });
-                }
-                trace!("received {:?} rtt {:?}", id, duration);
-            } else {
-                debug!("unsolicited {:?}", id);
-                continue
-            }
-        }
-    }
-
-    async fn send_target(self: Arc<Self>, target: TargetConfig) -> Result<()> {
-        let mut stream = get_stream(&target.iface)?;
-        let mut sequence_number = Wrapping(1);
-
-        loop {
-            task::sleep(Duration::from_millis(1000)).await;
-            let (request, id) = match target.r#type {
-                TargetType::Arp => (
-                    make_arp_request(&target)?,
-                    Target::Arp { addr: target.addr.clone() }
-                ),
-                TargetType::Icmp => (
-                    make_icmp_echo_request(&target, sequence_number.0)?,
-                    Target::Icmp { addr: target.addr.clone(), sequence_number: sequence_number.0 }
-                ),
-            };
-            sequence_number += Wrapping(1);
-            self.last_sent.lock().await.insert(id.clone(), Instant::now());
-            trace!("sent {:?}", id);
-            stream.write(&request).await.unwrap();
+            tx.send(msg).await.unwrap();
         }
     }
 
@@ -296,12 +360,33 @@ impl Probe {
         let mut tasks = Vec::new();
         let probe = Arc::new(self);
 
-        for (iface, _targets) in probe.clone().targets_by_iface() {
-            tasks.push(task::spawn(probe.clone().recv_group(iface)));
-        }
+        for (iface, targets) in probe.clone().targets_by_iface() {
+            let (tx, rx) = bounded(16);
+            let stream = get_stream(&iface)?;
+            tasks.push(task::spawn(probe.clone().fill_incoming_stream(iface, tx, stream.clone())));
 
-        for target in &probe.clone().targets {
-            tasks.push(task::spawn(probe.clone().send_target(target.clone())));
+            let mut task_senders = vec![];
+            for target in targets {
+                let (tx, rx) = bounded(16);
+                task_senders.push(tx);
+                let task = TargetTask {
+                    target,
+                    incoming_stream: rx,
+                    stream: stream.clone(),
+                };
+                tasks.push(task::spawn(task.run()));
+            }
+
+            tasks.push(task::spawn(async move {
+                loop {
+                    let msg = rx.recv().await.unwrap();
+                    for tx in &task_senders {
+                        if let Err(e) = tx.try_send(msg.clone()) {
+                            warn!("channel send failed: {}", e);
+                        }
+                    }
+                }
+            }));
         }
 
         join_all(tasks).await.into_iter().collect::<Result<()>>()

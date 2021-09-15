@@ -1,7 +1,7 @@
 use std::net::Ipv4Addr;
 use std::fmt;
 use std::fmt::Display;
-use super::Result;
+use anyhow::Result;
 use serde::Deserialize;
 use async_std::fs;
 
@@ -18,7 +18,7 @@ impl Display for TargetType {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Hash)]
 pub struct TargetConfig {
     pub r#type: TargetType,
     pub iface: String,
