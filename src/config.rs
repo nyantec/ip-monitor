@@ -1,4 +1,4 @@
-use std::net::Ipv4Addr;
+use std::net::IpAddr;
 use std::fmt;
 use std::fmt::Display;
 use anyhow::Result;
@@ -10,6 +10,8 @@ use async_std::fs;
 pub enum TargetType {
     Icmp,
     Arp,
+    Icmp6,
+    Ndp,
 }
 
 impl Display for TargetType {
@@ -22,8 +24,8 @@ impl Display for TargetType {
 pub struct TargetConfig {
     pub r#type: TargetType,
     pub iface: String,
-    pub addr: Ipv4Addr,
-    pub source_addr: Ipv4Addr,
+    pub addr: IpAddr,
+    pub source_addr: IpAddr,
 }
 
 #[derive(Debug, Clone, Deserialize)]

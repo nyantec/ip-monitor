@@ -6,7 +6,7 @@ edition = "2018"
 license = "MirOS"
 
 [dependencies]
-pnet = { version = "0.27", features = [ "serde" ] }
+pnet = { git = "https://github.com/nyantec/libpnet", branch = "feature/v6-ping", features = [ "serde" ] }
 custom_error = "1.8"
 getopts = "0.2"
 env_logger = "0.8"

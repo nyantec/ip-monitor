@@ -7,3 +7,11 @@ targets:
     iface: br42
     addr: 195.39.247.122
     source_addr: 195.39.247.100
+  - type: ndp
+    iface: br42
+    addr: 2a0f:4ac0:42::4
+    source_addr: 2a0f:4ac0:42::1
+  - type: icmp6
+    iface: br42
+    addr: 2a0f:4ac0:42::122
+    source_addr: 2a0f:4ac0:42::1
