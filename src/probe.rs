@@ -3,7 +3,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
 use std::convert::TryInto;
 use std::num::Wrapping;
-use std::collections::{HashMap, BTreeMap};
+use std::collections::HashMap;
 use anyhow::{Result};
 use super::config::{TargetConfig, TargetType};
 use afpacket::r#async::RawPacketStream;
@@ -12,6 +12,7 @@ use async_std::task;
 use async_std::future::timeout;
 use async_std::channel::{bounded, Receiver, Sender};
 use async_std::io::prelude::{WriteExt, ReadExt};
+use async_std::os::unix::net::UnixDatagram;
 use pnet::packet::arp::{MutableArpPacket, ArpPacket, ArpHardwareTypes, ArpOperations, Arp};
 use pnet::packet::ethernet::{MutableEthernetPacket, EthernetPacket, EtherTypes, Ethernet};
 use pnet::packet::ipv4::{MutableIpv4Packet, Ipv4Packet, Ipv4};
@@ -104,26 +105,23 @@ fn get_stream(iface: &str) -> Result<RawPacketStream> {
     Ok(stream)
 }
 
-fn log_rtt(target: Target, value: u64) {
-	let mut entry_fields = BTreeMap::<String, String>::new();
-	entry_fields.insert("SYSLOG_IDENTIFIER".into(), "sensor-data".into());
-
+async fn log_rtt(target: &Target, value: u64) -> Result<()> {
     let (target_type, target_addr) = match target {
         Target::Arp(t) => (TargetType::Arp, IpAddr::V4(t.addr)),
         Target::Icmp(t) => (TargetType::Icmp, IpAddr::V4(t.addr)),
         Target::Ndp(t) => (TargetType::Ndp, IpAddr::V6(t.addr)),
         Target::Icmp6(t) => (TargetType::Icmp6, IpAddr::V6(t.addr)),
     };
-	let mut entry = journald::JournalEntry::from_fields(&entry_fields);
-	entry.set_message(&format!("ip-monitor={}", serde_json::json!({
+    let message = format!("ip-monitor={}", serde_json::json!({
         "type": target_type.to_string(),
         "addr": target_addr,
         "rtt_nanos": value,
-    })));
+    }));
+    let data = format!("MESSAGE={}\nSYSLOG_IDENTIFIER=sensor-data\n", message);
 
-	if let Err(e) = journald::writer::submit(&entry) {
-		warn!("Error while submitting sensor data to journald: {}", e);
-	}
+    let sock = UnixDatagram::unbound()?;
+    sock.send_to(data.as_bytes(), "/run/systemd/journal/socket").await?;
+    Ok(())
 }
 
 fn expect_ipv4_addr(a: IpAddr) -> Ipv4Addr {
@@ -373,7 +371,8 @@ async fn arp_query(task: &mut TargetTask) -> Result<MacAddr> {
     });
     let resp_fut = task.get_response(&target, sent);
     match timeout(req_timeout, resp_fut).await {
-        Ok((_duration, response_data)) => {
+        Ok(response_res) => {
+            let (_duration, response_data) = response_res?;
             if let ResponseData::Arp { l2addr } = response_data {
                 trace!("arp query for {:?} was answered with {}", target, l2addr);
                 Ok(l2addr)
@@ -399,7 +398,8 @@ async fn ndp_query(task: &mut TargetTask) -> Result<MacAddr> {
     });
     let resp_fut = task.get_response(&target, sent);
     match timeout(req_timeout, resp_fut).await {
-        Ok((_duration, response_data)) => {
+        Ok(response_res) => {
+            let (_duration, response_data) = response_res?;
             if let ResponseData::Ndp { l2addr } = response_data {
                 trace!("ndp query for {:?} was answered with {}", target, l2addr);
                 Ok(l2addr)
@@ -415,13 +415,13 @@ async fn ndp_query(task: &mut TargetTask) -> Result<MacAddr> {
 }
 
 impl TargetTask {
-    async fn get_response(&mut self, filter_target: &Target, sent: Instant) -> (Duration, ResponseData) {
+    async fn get_response(&mut self, filter_target: &Target, sent: Instant) -> Result<(Duration, ResponseData)> {
         loop {
-            let (received_time, target, response_data) = self.incoming_stream.recv().await.unwrap();
+            let (received_time, target, response_data) = self.incoming_stream.recv().await?;
             if *filter_target != target { continue; }
             match received_time.checked_duration_since(sent) {
                 None => continue,
-                Some(duration) => break (duration, response_data),
+                Some(duration) => break Ok((duration, response_data)),
             }
         }
     }
@@ -479,14 +479,10 @@ impl TargetTask {
 
             let resp_fut = self.get_response(&id, sent);
             match timeout(req_interval, resp_fut).await {
-                Ok((duration, _response_data)) => {
+                Ok(response_res) => {
+                    let (duration, _response_data) = response_res?;
                     let duration_nanos = duration.as_nanos() as u64;
-                    {
-                        let id = id.clone();
-                        task::spawn_blocking(move || {
-                            log_rtt(id, duration_nanos);
-                        });
-                    }
+                    log_rtt(&id, duration_nanos).await?;
                     trace!("received {:?} rtt {:?}", &id, duration);
                     if let Some(remaining) = req_interval.checked_sub(duration) {
                         task::sleep(remaining).await;
