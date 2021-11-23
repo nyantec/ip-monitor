@@ -72,36 +72,60 @@ enum ResponseData {
     Icmp6,
 }
 
-fn get_mac(iface: &str) -> Result<MacAddr> {
+fn get_mac(iface: &str) -> Option<MacAddr> {
     let interface = pnet::datalink::interfaces()
         .into_iter()
         .find(|i| i.name == iface)
         .expect(&format!("Network interface {}", iface));
 
-    Ok(interface.mac.unwrap())
+    interface.mac
 }
 
 fn get_stream(iface: &str) -> Result<RawPacketStream> {
     let mut stream = RawPacketStream::new()?;
     stream.bind(&iface)?;
 
-    // sudo tcpdump -p -ni lo -ddd "arp or icmp or icmp6"
-    stream.set_bpf_filter(vec![
-        // length: 13
-        (40, 0, 0, 12),
-        (21, 3, 0, 2054),
-        (21, 0, 3, 2048),
-        (48, 0, 0, 23),
-        (21, 0, 1, 1),
-        (21, 0, 6, 34525),
-        (48, 0, 0, 20),
-        (21, 3, 0, 58),
-        (21, 0, 3, 44),
-        (48, 0, 0, 54),
-        (21, 0, 1, 58),
-        (6, 0, 0, 262144),
-        (6, 0, 0, 0),
-    ])?;
+    let filter = if get_mac(iface).is_some() {
+        // sudo tcpdump -p -ni lo -ddd "arp or icmp or icmp6"
+        vec![
+            // length: 13
+            (40, 0, 0, 12),
+            (21, 3, 0, 2054),
+            (21, 0, 3, 2048),
+            (48, 0, 0, 23),
+            (21, 0, 1, 1),
+            (21, 0, 6, 34525),
+            (48, 0, 0, 20),
+            (21, 3, 0, 58),
+            (21, 0, 3, 44),
+            (48, 0, 0, 54),
+            (21, 0, 1, 58),
+            (6, 0, 0, 262144),
+            (6, 0, 0, 0),
+        ]
+    } else {
+        // sudo tcpdump -p -ni some-l3-iface -ddd "icmp or icmp6"
+        vec![
+            // length: 15
+            (48, 0, 0, 0),
+            (84, 0, 0, 240),
+            (21, 0, 2, 64),
+            (48, 0, 0, 9),
+            (21, 8, 9, 1),
+            (48, 0, 0, 0),
+            (84, 0, 0, 240),
+            (21, 0, 6, 96),
+            (48, 0, 0, 6),
+            (21, 3, 0, 58),
+            (21, 0, 3, 44),
+            (48, 0, 0, 40),
+            (21, 0, 1, 58),
+            (6, 0, 0, 262144),
+            (6, 0, 0, 0),
+        ]
+    };
+
+    stream.set_bpf_filter(filter)?;
     Ok(stream)
 }
 
@@ -175,10 +199,9 @@ fn make_arp_request(target: &TargetConfig, dst_mac: Option<MacAddr>) -> Vec<u8> 
     ethernet_packet.packet().to_vec()
 }
 
-fn make_icmp_echo_request(target: &TargetConfig, sequence_number: u16, dst_mac: MacAddr) -> Vec<u8> {
+fn make_icmp_echo_request(target: &TargetConfig, sequence_number: u16, maybe_macs: Option<(MacAddr, MacAddr)>) -> Vec<u8> {
     let source_addr = expect_ipv4_addr(target.source_addr);
     let addr = expect_ipv4_addr(target.addr);
-    let source_mac = get_mac(&target.iface).unwrap();
 
     let icmp = icmp::echo_request::EchoRequest {
         icmp_type: IcmpTypes::EchoRequest,
@@ -217,18 +240,22 @@ fn make_icmp_echo_request(target: &TargetConfig, sequence_number: u16, dst_mac: 
     ipv4_packet.populate(&ipv4);
     ipv4_packet.set_checksum(ipv4::checksum(&ipv4_packet.to_immutable())); // needed?
 
-    let ethernet = Ethernet {
-        destination: dst_mac,
-        source: source_mac,
-        ethertype: EtherTypes::Ipv4,
-        payload: ipv4_packet.packet().to_vec(),
-    };
+    if let Some((source_mac, dst_mac)) = maybe_macs {
+        let ethernet = Ethernet {
+            destination: dst_mac,
+            source: source_mac,
+            ethertype: EtherTypes::Ipv4,
+            payload: ipv4_packet.packet().to_vec(),
+        };
 
-    let mut ethernet_buffer = [0u8; 75];
-    let mut ethernet_packet = MutableEthernetPacket::new(&mut ethernet_buffer).unwrap();
-    ethernet_packet.populate(&ethernet);
+        let mut ethernet_buffer = [0u8; 75];
+        let mut ethernet_packet = MutableEthernetPacket::new(&mut ethernet_buffer).unwrap();
+        ethernet_packet.populate(&ethernet);
 
-    ethernet_packet.packet().to_vec()
+        ethernet_packet.packet().to_vec()
+    } else {
+        ipv4_packet.packet().to_vec()
+    }
 }
 
 fn solicited_node_addr(ip: Ipv6Addr) -> Ipv6Addr {
@@ -300,10 +327,9 @@ fn make_ndp_request(target: &TargetConfig, dst_mac: Option<MacAddr>) -> Vec<u8> 
     ethernet_packet.packet().to_vec()
 }
 
-fn make_icmp6_echo_request(target: &TargetConfig, sequence_number: u16, dst_mac: MacAddr) -> Vec<u8> {
+fn make_icmp6_echo_request(target: &TargetConfig, sequence_number: u16, maybe_macs: Option<(MacAddr, MacAddr)>) -> Vec<u8> {
     let source_addr = expect_ipv6_addr(target.source_addr);
     let addr = expect_ipv6_addr(target.addr);
-    let source_mac = get_mac(&target.iface).unwrap();
 
     let icmp = icmpv6::echo_request::EchoRequest {
         icmpv6_type: Icmpv6Types::EchoRequest,
@@ -335,18 +361,22 @@ fn make_icmp6_echo_request(target: &TargetConfig, sequence_number: u16, dst_mac:
     let mut ipv6_packet = MutableIpv6Packet::new(&mut ipv6_buffer).unwrap();
     ipv6_packet.populate(&ipv6);
 
-    let ethernet = Ethernet {
-        destination: dst_mac,
-        source: source_mac,
-        ethertype: EtherTypes::Ipv6,
-        payload: ipv6_packet.packet().to_vec(),
-    };
+    if let Some((source_mac, dst_mac)) = maybe_macs {
+        let ethernet = Ethernet {
+            destination: dst_mac,
+            source: source_mac,
+            ethertype: EtherTypes::Ipv6,
+            payload: ipv6_packet.packet().to_vec(),
+        };
 
-    let mut ethernet_buffer = [0u8; 86];
-    let mut ethernet_packet = MutableEthernetPacket::new(&mut ethernet_buffer).unwrap();
-    ethernet_packet.populate(&ethernet);
+        let mut ethernet_buffer = [0u8; 86];
+        let mut ethernet_packet = MutableEthernetPacket::new(&mut ethernet_buffer).unwrap();
+        ethernet_packet.populate(&ethernet);
 
-    ethernet_packet.packet().to_vec()
+        ethernet_packet.packet().to_vec()
+    } else {
+        ipv6_packet.packet().to_vec()
+    }
 }
 
 #[derive(Debug)]
@@ -443,9 +473,15 @@ impl TargetTask {
                     )
                 },
                 TargetType::Icmp => {
-                    let dst_mac = arp_query(&mut self).await?;
+                    let macs = match get_mac(&self.target.iface) {
+                        Some(source_mac) => {
+                            let dst_mac = arp_query(&mut self).await?;
+                            Some((source_mac, dst_mac))
+                        },
+                        None => None,
+                    };
                     (
-                        make_icmp_echo_request(&self.target, sequence_number.0, dst_mac),
+                        make_icmp_echo_request(&self.target, sequence_number.0, macs),
                         Target::Icmp(IcmpTarget {
                             addr: expect_ipv4_addr(self.target.addr.clone()),
                             sequence_number: sequence_number.0
@@ -462,9 +498,15 @@ impl TargetTask {
                     )
                 },
                 TargetType::Icmp6 => {
-                    let dst_mac = ndp_query(&mut self).await?;
+                    let macs = match get_mac(&self.target.iface) {
+                        Some(source_mac) => {
+                            let dst_mac = ndp_query(&mut self).await?;
+                            Some((source_mac, dst_mac))
+                        },
+                        None => None,
+                    };
                     (
-                        make_icmp6_echo_request(&self.target, sequence_number.0, dst_mac),
+                        make_icmp6_echo_request(&self.target, sequence_number.0, macs),
                         Target::Icmp6(Icmp6Target {
                             addr: expect_ipv6_addr(self.target.addr.clone()),
                             sequence_number: sequence_number.0
@@ -519,19 +561,30 @@ impl Probe {
 
     async fn fill_incoming_stream(self: Arc<Self>, iface: String, tx: Sender<(Instant, Target, ResponseData)>, mut stream: RawPacketStream) -> Result<()> {
         let mut buf = [0u8; 1500];
-        let mac = get_mac(&iface)?;
+        let maybe_mac = get_mac(&iface);
 
         loop {
-            stream.read(&mut buf).await?;
-            let mut buf = &buf[..];
+            let len = stream.read(&mut buf).await?;
+            let mut buf = &buf[..len];
 
-            let ethernet = match EthernetPacket::new(&buf) {
-                Some(p) => p,
-                None => continue,
+            let pkt_type = if let Some(mac) = maybe_mac {
+                let ethernet = match EthernetPacket::new(&buf) {
+                    Some(p) => p,
+                    None => continue,
+                };
+                buf = &buf[EthernetPacket::minimum_packet_size()..];
+                if ethernet.get_destination() != mac { continue };
+                ethernet.get_ethertype()
+            } else {
+                let protocol_version: Option<u8> = buf.get(0).map(|x| x >> 4);
+                match protocol_version {
+                    Some(4) => EtherTypes::Ipv4,
+                    Some(6) => EtherTypes::Ipv6,
+                    _ => continue,
+                }
             };
-            buf = &buf[EthernetPacket::minimum_packet_size()..];
-            if ethernet.get_destination() != mac { continue };
-            let msg = match ethernet.get_ethertype() {
+
+            let msg = match pkt_type {
                 EtherTypes::Arp => {
                     let arp = match ArpPacket::new(&buf) {
                         Some(p) => p,
