@@ -567,8 +567,10 @@ impl Probe {
         let mut buf = [0u8; 1500];
         let maybe_mac = get_mac(&iface);
 
+        trace!("listening iface {}", &iface);
         loop {
             let len = stream.read(&mut buf).await?;
+            trace!("pkt {}", len);
             let mut buf = &buf[..len];
 
             let pkt_type = if let Some(mac) = maybe_mac {
