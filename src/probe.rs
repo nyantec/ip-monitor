@@ -671,6 +671,7 @@ impl Probe {
                 },
                 _ => continue,
             };
+            trace!("received: {:?}", msg);
             tx.send(msg).await.unwrap();
         }
     }
