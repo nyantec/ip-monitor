@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use anyhow::{Result};
 use super::config::{TargetConfig, TargetType};
 use afpacket::r#async::RawPacketStream;
-use log::{trace, warn};
+use log::{trace, warn, debug};
 use async_std::task;
 use async_std::future::timeout;
 use async_std::channel::{bounded, Receiver, Sender};
@@ -27,7 +27,7 @@ use pnet::packet::icmpv6::ndp::NeighborAdvertPacket;
 use pnet::util::MacAddr;
 use pnet::packet::Packet;
 use pnet::util::{checksum, ipv6_checksum};
-use futures::future::join_all;
+use futures::future::select_all;
 use cached::proc_macro::cached;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -704,6 +704,11 @@ impl Probe {
             }));
         }
 
-        join_all(tasks).await.into_iter().collect::<Result<()>>()
+        while tasks.len() > 0 {
+            let (next, _, remaining) = select_all(tasks).await;
+            next?;
+            tasks = remaining;
+        }
+        Ok(())
     }
 }
