@@ -85,6 +85,7 @@ fn get_stream(iface: &str) -> Result<RawPacketStream> {
     let mut stream = RawPacketStream::new()?;
     stream.bind(&iface)?;
 
+    trace!("mac addr is {:?} for iface {}", get_mac(iface), &iface);
     let filter = if get_mac(iface).is_some() {
         // sudo tcpdump -p -ni lo -ddd "arp or icmp or icmp6"
         vec![
