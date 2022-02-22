@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use anyhow::{Result};
 use super::config::{TargetConfig, TargetType};
 use afpacket::r#async::RawPacketStream;
-use log::{trace, warn};
+use log::{trace, warn, debug};
 use async_std::task;
 use async_std::future::timeout;
 use async_std::channel::{bounded, Receiver, Sender};
@@ -392,7 +392,8 @@ struct TargetTask {
 
 #[cached(time = 60, key = "TargetConfig", convert = r#"{ task.target.clone() }"#, result = true)]
 async fn arp_query(task: &mut TargetTask) -> Result<MacAddr> {
-    let req_timeout = Duration::from_secs(1000);
+    debug!("starting arp query for {:?}", task.target);
+    let req_timeout = Duration::from_secs(1);
     let sent = Instant::now();
     let request = make_arp_request(&task.target, None);
     task.stream.write(&request).await.unwrap();
@@ -419,7 +420,7 @@ async fn arp_query(task: &mut TargetTask) -> Result<MacAddr> {
 
 #[cached(time = 60, key = "TargetConfig", convert = r#"{ task.target.clone() }"#, result = true)]
 async fn ndp_query(task: &mut TargetTask) -> Result<MacAddr> {
-    let req_timeout = Duration::from_secs(1000);
+    let req_timeout = Duration::from_secs(1);
     let sent = Instant::now();
     let request = make_ndp_request(&task.target, None);
     task.stream.write(&request).await.unwrap();
