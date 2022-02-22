@@ -393,55 +393,58 @@ struct TargetTask {
 #[cached(time = 60, key = "TargetConfig", convert = r#"{ task.target.clone() }"#, result = true)]
 async fn arp_query(task: &mut TargetTask) -> Result<MacAddr> {
     debug!("starting arp query for {:?}", task.target);
-    let req_timeout = Duration::from_secs(1);
-    let sent = Instant::now();
-    let request = make_arp_request(&task.target, None);
-    task.stream.write(&request).await.unwrap();
-    let target = Target::Arp(ArpTarget {
-        addr: expect_ipv4_addr(task.target.addr.clone())
-    });
-    let resp_fut = task.get_response(&target, sent);
-    match timeout(req_timeout, resp_fut).await {
-        Ok(response_res) => {
-            let (_duration, response_data) = response_res?;
-            if let ResponseData::Arp { l2addr } = response_data {
-                trace!("arp query for {:?} was answered with {}", target, l2addr);
-                Ok(l2addr)
-            } else {
-                unreachable!();
-            }
-        },
-        Err(err) => {
-            warn!("arp query for {:?} timed out", target);
-            Err(err)?
-        },
+    loop {
+        let req_timeout = Duration::from_secs(1);
+        let sent = Instant::now();
+        let request = make_arp_request(&task.target, None);
+        task.stream.write(&request).await.unwrap();
+        let target = Target::Arp(ArpTarget {
+            addr: expect_ipv4_addr(task.target.addr.clone())
+        });
+        let resp_fut = task.get_response(&target, sent);
+        match timeout(req_timeout, resp_fut).await {
+            Ok(response_res) => {
+                let (_duration, response_data) = response_res?;
+                if let ResponseData::Arp { l2addr } = response_data {
+                    trace!("arp query for {:?} was answered with {}", target, l2addr);
+                    break Ok(l2addr);
+                } else {
+                    unreachable!();
+                }
+            },
+            Err(_timeout) => {
+                warn!("arp query for {:?} timed out, retrying", target);
+            },
+        }
     }
 }
 
 #[cached(time = 60, key = "TargetConfig", convert = r#"{ task.target.clone() }"#, result = true)]
 async fn ndp_query(task: &mut TargetTask) -> Result<MacAddr> {
-    let req_timeout = Duration::from_secs(1);
-    let sent = Instant::now();
-    let request = make_ndp_request(&task.target, None);
-    task.stream.write(&request).await.unwrap();
-    let target = Target::Ndp(NdpTarget {
-        addr: expect_ipv6_addr(task.target.addr.clone())
-    });
-    let resp_fut = task.get_response(&target, sent);
-    match timeout(req_timeout, resp_fut).await {
-        Ok(response_res) => {
-            let (_duration, response_data) = response_res?;
-            if let ResponseData::Ndp { l2addr } = response_data {
-                trace!("ndp query for {:?} was answered with {}", target, l2addr);
-                Ok(l2addr)
-            } else {
-                unreachable!();
-            }
-        },
-        Err(err) => {
-            warn!("ndp query for {:?} timed out", target);
-            Err(err)?
-        },
+    debug!("starting ndp query for {:?}", task.target);
+    loop {
+        let req_timeout = Duration::from_secs(1);
+        let sent = Instant::now();
+        let request = make_ndp_request(&task.target, None);
+        task.stream.write(&request).await.unwrap();
+        let target = Target::Ndp(NdpTarget {
+            addr: expect_ipv6_addr(task.target.addr.clone())
+        });
+        let resp_fut = task.get_response(&target, sent);
+        match timeout(req_timeout, resp_fut).await {
+            Ok(response_res) => {
+                let (_duration, response_data) = response_res?;
+                if let ResponseData::Ndp { l2addr } = response_data {
+                    trace!("ndp query for {:?} was answered with {}", target, l2addr);
+                    break Ok(l2addr);
+                } else {
+                    unreachable!();
+                }
+            },
+            Err(_timeout) => {
+                warn!("ndp query for {:?} timed out", target);
+            },
+        }
     }
 }
 
