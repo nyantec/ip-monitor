@@ -85,16 +85,15 @@ fn get_stream(iface: &str) -> Result<RawPacketStream> {
     let mut stream = RawPacketStream::new()?;
     stream.bind(&iface)?;
 
-    trace!("mac addr is {:?} for iface {}", get_mac(iface), &iface);
     let filter = if get_mac(iface).is_some() {
         // sudo tcpdump -p -ni lo -ddd "arp or icmp or icmp6"
         vec![
             // length: 13
             (40, 0, 0, 12),
-            (21, 3, 0, 2054),
-            (21, 0, 3, 2048),
+            (21, 9, 0, 2054),
+            (21, 0, 2, 2048),
             (48, 0, 0, 23),
-            (21, 0, 1, 1),
+            (21, 6, 7, 1),
             (21, 0, 6, 34525),
             (48, 0, 0, 20),
             (21, 3, 0, 58),
@@ -568,10 +567,9 @@ impl Probe {
         let mut buf = [0u8; 1500];
         let maybe_mac = get_mac(&iface);
 
-        trace!("listening iface {}", &iface);
+        trace!("listening iface {}, mac: {:?}", &iface, &maybe_mac);
         loop {
             let len = stream.read(&mut buf).await?;
-            trace!("pkt {}", len);
             let mut buf = &buf[..len];
 
             let pkt_type = if let Some(mac) = maybe_mac {
