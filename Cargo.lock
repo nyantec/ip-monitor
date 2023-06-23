@@ -680,7 +680,7 @@ checksum = "8b870d8c151b6f2fb93e84a13146138f05d02ed11c7e7c54f8826aaaf7c9f184"
 [[package]]
 name = "pnet"
 version = "0.28.0"
-source = "git+https://github.com/nyantec/libpnet?branch=feature/v6-ping#294541ab374968f3d4c8a332e7790c44180ca50b"
+source = "git+https://github.com/nyantec/libpnet?branch=icmpv6-echo#a77a26995f19d84af2ec96c42a44dddae53fcf17"
 dependencies = [
  "ipnetwork",
  "pnet_base",
@@ -693,7 +693,7 @@ dependencies = [
 [[package]]
 name = "pnet_base"
 version = "0.28.0"
-source = "git+https://github.com/nyantec/libpnet?branch=feature/v6-ping#294541ab374968f3d4c8a332e7790c44180ca50b"
+source = "git+https://github.com/nyantec/libpnet?branch=icmpv6-echo#a77a26995f19d84af2ec96c42a44dddae53fcf17"
 dependencies = [
  "serde",
 ]
@@ -701,7 +701,7 @@ dependencies = [
 [[package]]
 name = "pnet_datalink"
 version = "0.28.0"
-source = "git+https://github.com/nyantec/libpnet?branch=feature/v6-ping#294541ab374968f3d4c8a332e7790c44180ca50b"
+source = "git+https://github.com/nyantec/libpnet?branch=icmpv6-echo#a77a26995f19d84af2ec96c42a44dddae53fcf17"
 dependencies = [
  "ipnetwork",
  "libc",
@@ -714,7 +714,7 @@ dependencies = [
 [[package]]
 name = "pnet_macros"
 version = "0.28.0"
-source = "git+https://github.com/nyantec/libpnet?branch=feature/v6-ping#294541ab374968f3d4c8a332e7790c44180ca50b"
+source = "git+https://github.com/nyantec/libpnet?branch=icmpv6-echo#a77a26995f19d84af2ec96c42a44dddae53fcf17"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -725,7 +725,7 @@ dependencies = [
 [[package]]
 name = "pnet_macros_support"
 version = "0.28.0"
-source = "git+https://github.com/nyantec/libpnet?branch=feature/v6-ping#294541ab374968f3d4c8a332e7790c44180ca50b"
+source = "git+https://github.com/nyantec/libpnet?branch=icmpv6-echo#a77a26995f19d84af2ec96c42a44dddae53fcf17"
 dependencies = [
  "pnet_base",
 ]
@@ -733,7 +733,7 @@ dependencies = [
 [[package]]
 name = "pnet_packet"
 version = "0.28.0"
-source = "git+https://github.com/nyantec/libpnet?branch=feature/v6-ping#294541ab374968f3d4c8a332e7790c44180ca50b"
+source = "git+https://github.com/nyantec/libpnet?branch=icmpv6-echo#a77a26995f19d84af2ec96c42a44dddae53fcf17"
 dependencies = [
  "glob",
  "pnet_base",
@@ -744,7 +744,7 @@ dependencies = [
 [[package]]
 name = "pnet_sys"
 version = "0.28.0"
-source = "git+https://github.com/nyantec/libpnet?branch=feature/v6-ping#294541ab374968f3d4c8a332e7790c44180ca50b"
+source = "git+https://github.com/nyantec/libpnet?branch=icmpv6-echo#a77a26995f19d84af2ec96c42a44dddae53fcf17"
 dependencies = [
  "libc",
  "winapi",
@@ -753,7 +753,7 @@ dependencies = [
 [[package]]
 name = "pnet_transport"
 version = "0.28.0"
-source = "git+https://github.com/nyantec/libpnet?branch=feature/v6-ping#294541ab374968f3d4c8a332e7790c44180ca50b"
+source = "git+https://github.com/nyantec/libpnet?branch=icmpv6-echo#a77a26995f19d84af2ec96c42a44dddae53fcf17"
 dependencies = [
  "libc",
  "pnet_base",
